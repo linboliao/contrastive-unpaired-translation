@@ -3,6 +3,7 @@ import torch
 from .base_model import BaseModel
 from . import networks
 from .patchnce import PatchNCELoss
+from .stain_utils import rgb_tensor_to_dab, RegistrationWeightTable
 import util.util as util
 
 
@@ -36,6 +37,17 @@ class CUTModel(BaseModel):
                             type=util.str2bool, nargs='?', const=True, default=False,
                             help="Enforce flip-equivariance as additional regularization. It's used by FastCUT, but not CUT")
 
+        parser.add_argument('--lambda_DAB', type=float, default=2.0,
+                            help='weight for the paired DAB (ERG/vessel) L1 loss between fake_B and the '
+                                 'registered real_B, computed via color deconvolution. Requires trainA/trainB '
+                                 'to be filename-aligned registered pairs fed with matching indices '
+                                 '(serial_batches + equal-size, sorted, filename-aligned lists). Set 0 to disable.')
+        parser.add_argument('--dab_scores_tsv', type=str, default='./qc/pair_scores.tsv',
+                            help='tsv with per-pair reg_score/erg_status (see qc/pair_scores.tsv) used to '
+                                 'weight the DAB loss by registration confidence; missing stems default to weight 1.0')
+        parser.add_argument('--dab_ambiguous_weight', type=float, default=0.3,
+                            help='multiplier applied to the DAB loss weight for pairs whose erg_status is "ambiguous"')
+
         parser.set_defaults(pool_size=0)  # no image pooling
 
         opt, _ = parser.parse_known_args()
@@ -66,6 +78,9 @@ class CUTModel(BaseModel):
             self.loss_names += ['NCE_Y']
             self.visual_names += ['idt_B']
 
+        if self.isTrain and opt.lambda_DAB > 0.0:
+            self.loss_names += ['DAB']
+
         if self.isTrain:
             self.model_names = ['G', 'F', 'D']
         else:  # during test time, only load G
@@ -86,6 +101,11 @@ class CUTModel(BaseModel):
                 self.criterionNCE.append(PatchNCELoss(opt).to(self.device))
 
             self.criterionIdt = torch.nn.L1Loss().to(self.device)
+
+            if opt.lambda_DAB > 0.0:
+                self.dab_weights = RegistrationWeightTable(
+                    opt.dab_scores_tsv, ambiguous_weight=opt.dab_ambiguous_weight)
+
             self.optimizer_G = torch.optim.Adam(self.netG.parameters(), lr=opt.lr, betas=(opt.beta1, opt.beta2))
             self.optimizer_D = torch.optim.Adam(self.netD.parameters(), lr=opt.lr, betas=(opt.beta1, opt.beta2))
             self.optimizers.append(self.optimizer_G)
@@ -192,8 +212,26 @@ class CUTModel(BaseModel):
         else:
             loss_NCE_both = self.loss_NCE
 
-        self.loss_G = self.loss_G_GAN + loss_NCE_both
+        if self.opt.lambda_DAB > 0.0:
+            self.loss_DAB = self.compute_dab_loss(self.fake_B, self.real_B) * self.opt.lambda_DAB
+        else:
+            self.loss_DAB = 0.0
+
+        self.loss_G = self.loss_G_GAN + loss_NCE_both + self.loss_DAB
         return self.loss_G
+
+    def compute_dab_loss(self, fake_B, real_B):
+        """Paired supervision on the DAB (ERG/vessel) optical-density channel between
+        fake_B and the registered real_B, weighted per-sample by registration confidence
+        (RegistrationWeightTable, keyed on the HE filename stem in self.image_paths).
+        Only meaningful when real_A/real_B are true registered pairs (see set_input /
+        data/unaligned_dataset.py's serial_batches + filename-aligned lists).
+        """
+        dab_fake = rgb_tensor_to_dab(fake_B)
+        dab_real = rgb_tensor_to_dab(real_B)
+        per_sample = torch.abs(dab_fake - dab_real).mean(dim=[1, 2, 3])
+        weights = self.dab_weights.get_batch(self.image_paths, device=per_sample.device, dtype=per_sample.dtype)
+        return (per_sample * weights).mean()
 
     def calculate_NCE_loss(self, src, tgt):
         n_layers = len(self.nce_layers)
