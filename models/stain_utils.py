@@ -43,9 +43,15 @@ class RegistrationWeightTable:
     registered or ambiguous pairs contribute less.
     """
 
-    def __init__(self, tsv_path, ambiguous_weight=0.3, min_weight=0.05):
+    def __init__(self, tsv_path, ambiguous_weight=0.3, min_weight=0.05, min_reg_score=0.0):
+        """min_reg_score: hard-exclude pairs whose raw reg_score falls below this
+        (weight forced to 0.0, bypassing min_weight and the erg_status multiplier)
+        instead of only down-weighting them. 0.0 preserves the original
+        soft-weighting-only behaviour. See e-series registration-hard-filter study.
+        """
         self.ambiguous_weight = ambiguous_weight
         self.min_weight = min_weight
+        self.min_reg_score = min_reg_score
         self._weights = {}
         if tsv_path and os.path.isfile(tsv_path):
             with open(tsv_path, newline='') as f:
@@ -54,9 +60,13 @@ class RegistrationWeightTable:
                     if not stem:
                         continue
                     try:
-                        weight = float(row.get('reg_score', 1.0))
+                        raw_score = float(row.get('reg_score', 1.0))
                     except (TypeError, ValueError):
-                        weight = 1.0
+                        raw_score = 1.0
+                    if raw_score < self.min_reg_score:
+                        self._weights[stem] = 0.0
+                        continue
+                    weight = raw_score
                     if row.get('erg_status') == 'ambiguous':
                         weight *= self.ambiguous_weight
                     self._weights[stem] = max(self.min_weight, min(1.0, weight))

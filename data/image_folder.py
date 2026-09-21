@@ -15,6 +15,8 @@ IMG_EXTENSIONS = [
     '.png', '.PNG', '.ppm', '.PPM', '.bmp', '.BMP',
     '.tif', '.TIF', '.tiff', '.TIFF',
 ]
+IGNORED_DIRS = {'@eaDir', '__MACOSX', '.ipynb_checkpoints'}
+IGNORED_PREFIXES = ('SYNOFILE_THUMB', '._')
 
 
 def is_image_file(filename):
@@ -25,8 +27,11 @@ def make_dataset(dir, max_dataset_size=float("inf")):
     images = []
     assert os.path.isdir(dir) or os.path.islink(dir), '%s is not a valid directory' % dir
 
-    for root, _, fnames in sorted(os.walk(dir, followlinks=True)):
+    for root, dirs, fnames in sorted(os.walk(dir, followlinks=True)):
+        dirs[:] = [d for d in dirs if d not in IGNORED_DIRS]
         for fname in fnames:
+            if fname.startswith(IGNORED_PREFIXES) or fname == '.DS_Store':
+                continue
             if is_image_file(fname):
                 path = os.path.join(root, fname)
                 images.append(path)

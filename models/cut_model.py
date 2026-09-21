@@ -47,6 +47,10 @@ class CUTModel(BaseModel):
                                  'weight the DAB loss by registration confidence; missing stems default to weight 1.0')
         parser.add_argument('--dab_ambiguous_weight', type=float, default=0.3,
                             help='multiplier applied to the DAB loss weight for pairs whose erg_status is "ambiguous"')
+        parser.add_argument('--dab_min_reg_score', type=float, default=0.0,
+                            help='hard-exclude pairs with reg_score below this from the paired DAB loss '
+                                 '(weight forced to 0 instead of continuously down-weighted). 0.0 (default) '
+                                 'preserves the original soft-weighting-only behaviour.')
 
         parser.set_defaults(pool_size=0)  # no image pooling
 
@@ -104,7 +108,8 @@ class CUTModel(BaseModel):
 
             if opt.lambda_DAB > 0.0:
                 self.dab_weights = RegistrationWeightTable(
-                    opt.dab_scores_tsv, ambiguous_weight=opt.dab_ambiguous_weight)
+                    opt.dab_scores_tsv, ambiguous_weight=opt.dab_ambiguous_weight,
+                    min_reg_score=opt.dab_min_reg_score)
 
             self.optimizer_G = torch.optim.Adam(self.netG.parameters(), lr=opt.lr, betas=(opt.beta1, opt.beta2))
             self.optimizer_D = torch.optim.Adam(self.netD.parameters(), lr=opt.lr, betas=(opt.beta1, opt.beta2))
